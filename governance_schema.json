@@ -1,0 +1,28 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "BeaconWise Governance Policy Schema",
+  "type": "object",
+  "required": ["policy_id"],
+  "additionalProperties": true,
+  "properties": {
+    "policy_id": {"type": "string"},
+    "resilience_policy": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "enabled": {"type": "boolean"},
+        "version": {"type": "string"},
+        "targets": {"type": "object"},
+        "budgets": {"type": "object"},
+        "dependency_caps": {"type": "object"},
+        "triggers": {"type": ["array", "object"]},
+        "plans": {"type": "object"},
+        "scoring": {"type": "object"},
+        "damping": {"type": "object"},
+        "adaptive_tuning": {"type": "object"},
+        "human_override": {"type": "object"},
+        "audit": {"type": "object"}
+      }
+    }
+  }
+}

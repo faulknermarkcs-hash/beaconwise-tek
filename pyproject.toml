@@ -1,0 +1,58 @@
+[build-system]
+requires = ["setuptools>=68.0.0", "wheel>=0.43.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "beaconwise"
+version = "1.9.0"
+description = "BeaconWise Transparency Ecosphere Kernel (TEK) — Deterministic governance infrastructure for intelligence systems"
+readme = "README.md"
+license = {text = "Apache-2.0"}
+requires-python = ">=3.10"
+keywords = ["ai-governance", "transparency", "audit", "deterministic", "epack"]
+classifiers = [
+  "Development Status :: 5 - Production/Stable",
+  "Intended Audience :: Developers",
+  "Intended Audience :: Science/Research",
+  "License :: OSI Approved :: Apache Software License",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Topic :: Scientific/Engineering :: Artificial Intelligence",
+  "Topic :: Security",
+]
+dependencies = [
+  "fastapi",
+  "uvicorn",
+  "gunicorn",
+  "psycopg2-binary",
+  "httpx",
+  "pydantic",
+  "pyyaml",
+  "numpy",
+  "streamlit",
+  "python-dotenv",
+  "groq",
+  "requests>=2.31.0",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=7.0",
+  "pytest-asyncio",
+  "pytest-cov",
+  "httpx",
+]
+
+[project.urls]
+Homepage = "https://github.com/beaconwise-tek/beaconwise"
+Documentation = "https://github.com/beaconwise-tek/beaconwise/tree/main/docs"
+"Bug Tracker" = "https://github.com/beaconwise-tek/beaconwise/issues"
+Changelog = "https://github.com/beaconwise-tek/beaconwise/blob/main/CHANGELOG.md"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
