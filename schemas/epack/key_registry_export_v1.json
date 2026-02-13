@@ -1,0 +1,46 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://imaginairium.ai/schemas/epack-key-registry-export-v1.json",
+  "title": "EPACK Key Registry Export",
+  "description": "TEK public key registry export format for external auditor verification (v1.0.0)",
+  "type": "object",
+  "patternProperties": {
+    "^[a-zA-Z0-9_-]+:[a-zA-Z0-9_-]+$": {
+      "description": "Signer ID in format 'type:id' (e.g., 'provider:claude', 'human:alice')",
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": ["public_pem", "key_version", "created_at", "revoked"],
+        "properties": {
+          "public_pem": {
+            "type": "string",
+            "description": "PEM-encoded Ed25519 public key",
+            "pattern": "^-----BEGIN PUBLIC KEY-----"
+          },
+          "key_version": {
+            "type": "integer",
+            "description": "Key version number (monotonically increasing)",
+            "minimum": 1
+          },
+          "created_at": {
+            "type": "string",
+            "description": "Key creation timestamp in ISO 8601 format",
+            "format": "date-time"
+          },
+          "revoked": {
+            "type": "boolean",
+            "description": "Whether this key has been revoked"
+          },
+          "revoked_at": {
+            "type": ["string", "null"],
+            "description": "Revocation timestamp in ISO 8601 format (null if not revoked)",
+            "format": "date-time"
+          }
+        },
+        "additionalProperties": false
+      }
+    }
+  },
+  "additionalProperties": false
+}
