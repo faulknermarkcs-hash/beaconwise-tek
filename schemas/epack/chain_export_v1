@@ -1,0 +1,102 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://imaginairium.ai/schemas/epack-chain-export-v1.json",
+  "title": "EPACK Chain Export",
+  "description": "TEK EPACK chain export format for external auditor verification (v1.0.0)",
+  "type": "object",
+  "required": ["metadata", "blocks"],
+  "properties": {
+    "metadata": {
+      "type": "object",
+      "required": ["kernel_version", "export_timestamp", "hash_algorithm", "signature_algorithm", "chain_length"],
+      "properties": {
+        "kernel_version": {
+          "type": "string",
+          "description": "TEK kernel version (semantic versioning)",
+          "pattern": "^\\d+\\.\\d+\\.\\d+$"
+        },
+        "export_timestamp": {
+          "type": "string",
+          "description": "Export time in ISO 8601 format",
+          "format": "date-time"
+        },
+        "hash_algorithm": {
+          "type": "string",
+          "description": "Hash algorithm used for block linkage",
+          "enum": ["SHA256"]
+        },
+        "signature_algorithm": {
+          "type": "string",
+          "description": "Signature algorithm used for block signing",
+          "enum": ["Ed25519"]
+        },
+        "chain_length": {
+          "type": "integer",
+          "description": "Number of blocks in the chain",
+          "minimum": 0
+        }
+      }
+    },
+    "blocks": {
+      "type": "array",
+      "description": "Ordered array of EPACK blocks (genesis first)",
+      "items": {
+        "type": "object",
+        "required": ["block_hash", "prev_block_hash", "payload_hash", "timestamp", "signer"],
+        "properties": {
+          "block_hash": {
+            "type": "string",
+            "description": "SHA256 hash of this block",
+            "pattern": "^[a-f0-9]{64}$"
+          },
+          "prev_block_hash": {
+            "type": "string",
+            "description": "SHA256 hash of previous block (all zeros for genesis)",
+            "pattern": "^[a-f0-9]{64}$"
+          },
+          "payload_hash": {
+            "type": "string",
+            "description": "SHA256 hash of block payload (payload not included in export)",
+            "pattern": "^[a-f0-9]{64}$"
+          },
+          "timestamp": {
+            "type": "string",
+            "description": "Block creation time in ISO 8601 format",
+            "format": "date-time"
+          },
+          "signer": {
+            "type": "string",
+            "description": "Signer identifier (format: type:id, e.g., 'provider:claude', 'human:alice')"
+          },
+          "signature": {
+            "type": "string",
+            "description": "Base64-encoded Ed25519 signature of payload_hash"
+          },
+          "validator_results": {
+            "type": "array",
+            "description": "TEK validator outcomes for this block",
+            "items": {
+              "type": "object",
+              "required": ["control", "outcome"],
+              "properties": {
+                "control": {
+                  "type": "string",
+                  "description": "Control ID (e.g., 'TEK-01', 'LED-02')"
+                },
+                "outcome": {
+                  "type": "string",
+                  "description": "Validation outcome",
+                  "enum": ["PASS", "FAIL", "DEFER"]
+                },
+                "message": {
+                  "type": "string",
+                  "description": "Optional explanation"
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}
