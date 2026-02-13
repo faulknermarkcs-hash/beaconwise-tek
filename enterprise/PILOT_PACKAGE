@@ -1,0 +1,7 @@
+
+Enterprise Pilot Deployment:
+- Internal advisory tool first
+- Metrics: hallucination drop 30%+, determinism 90%+, independence 0.7+
+- Configure API keys + Postgres
+- Run consensus kernel
+- Review EPACK logs and replay reports
