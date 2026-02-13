@@ -1,0 +1,106 @@
+{
+  "schema": "beaconwise-governance/constitution",
+  "version": "1.0.0",
+  "product": "BeaconWise Transparency Ecosphere Kernel (TEK)",
+  "shorthand": "BeaconWise TEK",
+  "invariants": [
+    {
+      "id": "INV-DET-001",
+      "name": "Deterministic Routing",
+      "severity": "critical",
+      "category": "determinism",
+      "description": "All routing decisions must be pure functions of their inputs."
+    },
+    {
+      "id": "INV-DET-002",
+      "name": "No Hidden State",
+      "severity": "critical",
+      "category": "determinism",
+      "description": "No governance decision may depend on state not captured in the EPACK chain."
+    },
+    {
+      "id": "INV-TRA-001",
+      "name": "Audit Chain Completeness",
+      "severity": "critical",
+      "category": "transparency",
+      "description": "Every governed interaction must produce an EPACK record."
+    },
+    {
+      "id": "INV-TRA-002",
+      "name": "Failure Transparency",
+      "severity": "critical",
+      "category": "transparency",
+      "description": "Uncertainty must be explicitly signaled. Silent fallback is prohibited."
+    },
+    {
+      "id": "INV-TRA-003",
+      "name": "Non-Persuasion",
+      "severity": "critical",
+      "category": "transparency",
+      "description": "Must not optimize for persuasion, engagement, or behavioral influence."
+    },
+    {
+      "id": "INV-AUD-001",
+      "name": "Hash Chain Integrity",
+      "severity": "critical",
+      "category": "audit",
+      "description": "EPACK records must form a tamper-evident SHA-256 hash chain."
+    },
+    {
+      "id": "INV-AUD-002",
+      "name": "Provenance Manifests",
+      "severity": "warning",
+      "category": "audit",
+      "description": "Every EPACK must include a build manifest with kernel version and feature flags."
+    },
+    {
+      "id": "INV-CAP-001",
+      "name": "Vendor Neutrality",
+      "severity": "critical",
+      "category": "anti-capture",
+      "description": "No single provider may gain privileged governance control."
+    },
+    {
+      "id": "INV-CAP-002",
+      "name": "Fork Continuity",
+      "severity": "warning",
+      "category": "anti-capture",
+      "description": "Audit chains must survive forks."
+    },
+    {
+      "id": "INV-CAP-003",
+      "name": "Configuration Transparency",
+      "severity": "critical",
+      "category": "anti-capture",
+      "description": "All governance configuration changes must produce audit events."
+    },
+    {
+      "id": "INV-SAF-001",
+      "name": "Validation Before Delivery",
+      "severity": "critical",
+      "category": "safety",
+      "description": "No model output may reach the user without validation."
+    },
+    {
+      "id": "INV-SAF-002",
+      "name": "Human Override Preservation",
+      "severity": "critical",
+      "category": "safety",
+      "description": "Meaningful human override capability must always be preserved."
+    },
+    {
+      "id": "INV-EVO-001",
+      "name": "Backward Compatibility",
+      "severity": "warning",
+      "category": "evolution",
+      "description": "Upgrades must preserve backward compatibility of audit formats."
+    }
+  ],
+  "engineering_laws": [
+    "Determinism First",
+    "Transparency Over Convenience",
+    "Verifiability Over Claims",
+    "Minimal Trust Assumption",
+    "OSS Community Viability"
+  ]
+}
