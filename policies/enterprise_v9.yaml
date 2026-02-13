@@ -1,0 +1,128 @@
+# BeaconWise v1.9.0 — Enterprise Policy Profile
+policy_id: enterprise_v9
+policy_version: "1.9.0"
+
+# -------------------------
+# Consensus Provider Mix
+# -------------------------
+consensus:
+  providers:
+    primary:
+      provider: openai
+      model: gpt-4o
+    challengers:
+      - provider: xai
+        model: grok
+    validators:
+      - provider: groq
+        model: compound-beta
+  min_validators: 1
+  max_validators: 2
+  min_agreement: 0.67
+
+# -------------------------
+# Resilience Policy (V9 runtime loop)
+# -------------------------
+resilience_policy:
+  version: "0.1"
+  enabled: true
+
+  targets:
+    tsi:
+      target: 0.75
+      min: 0.70
+      critical: 0.55
+    recovery:
+      max_minutes: 15
+
+  budgets:
+    latency_ms_max: 4000
+    cost_usd_max: 0.25
+
+  dependency_caps:
+    max_provider_mass: 0.70
+    min_plane_diversity: 0.30
+
+  triggers:
+    - id: tsi_forecast_15m_low
+      when: "tsi_forecast_15m < targets.tsi.min"
+      severity: high
+    - id: provider_error_spike
+      when: "provider_error_rate_5m > 0.05"
+      severity: high
+
+  plans:
+    tier_1:
+      - id: diversify_validator_plane
+        name: "Diversify validator plane"
+        predicted:
+          tsi_median: 0.72
+          tsi_low: 0.68
+          tsi_high: 0.76
+          latency_ms: 150
+          cost_usd: 0.01
+          independence_gain: 0.15
+        routing_patch:
+          validators: "add:anthropic:claude"
+          evidence_threshold: "medium"
+    tier_2:
+      - id: activate_hot_standby_primary
+        name: "Hot-standby primary failover"
+        predicted:
+          tsi_median: 0.74
+          tsi_low: 0.66
+          tsi_high: 0.82
+          latency_ms: 250
+          cost_usd: 0.03
+          independence_gain: 0.10
+        routing_patch:
+          primary: "xai:grok"
+          challengers: "add:openai:gpt-4o"
+    tier_3:
+      - id: increase_consensus_depth
+        name: "Increase consensus depth"
+        predicted:
+          tsi_median: 0.78
+          tsi_low: 0.70
+          tsi_high: 0.86
+          latency_ms: 650
+          cost_usd: 0.08
+          independence_gain: 0.20
+        routing_patch:
+          validators: "set:groq:compound-beta,anthropic:claude"
+          min_validators: 2
+          min_agreement: 0.75
+
+  scoring:
+    weights:
+      diversity_bonus: 0.15
+      latency_penalty_per_ms: 0.0003
+      cost_penalty_per_usd: 1.0
+      confidence_low_penalty: 0.25
+
+  damping:
+    enabled: true
+    max_oscillation: 0.15
+    cooldown_seconds: 60
+    pid:
+      kp: 0.5
+      ki: 0.2
+      kd: 0.1
+
+  adaptive_tuning:
+    enabled: true
+    max_delta_per_event: 0.08
+    min_events_before_update: 5
+
+  human_override:
+    enabled: true
+    required_for_tier: 3
+    break_glass_roles: ["ciso", "security_oncall"]
+
+  audit:
+    log_decisions: true
+    log_applied: true
+    log_verified: true
+    verify_post_recovery:
+      replay_samples: 3
+      mvi_check: true

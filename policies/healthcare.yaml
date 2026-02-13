@@ -1,0 +1,37 @@
+# BeaconWise v1.9.0 — Healthcare Domain Policy
+# Stricter governance for medical advisory use cases.
+
+policy_id: healthcare_v1_9
+
+consensus:
+  min_validators: 2
+  independence_min: 0.7
+  primary:
+    provider: openai
+    model: gpt-4o
+  validators:
+    - provider: grok
+      model: grok-2
+    - provider: anthropic
+      model: claude-3-haiku-20240307
+
+challenger:
+  enabled: true
+  provider: groq
+  model: compound-beta
+  triggers:
+    high_stakes: true
+    disagreement_threshold: 0.15    # Lower threshold — more aggressive
+    on_gate: true
+    low_evidence: true
+  limits:
+    timeout_s: 8
+    max_tokens: 600
+    max_challenges: 20
+
+evidence_rules:
+  min_strength: E2                  # Require clinical evidence
+
+replay:
+  strict_required: true             # Mandatory replay verification
+  retention_years: 10
