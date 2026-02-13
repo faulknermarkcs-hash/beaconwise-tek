@@ -1,0 +1,53 @@
+# BeaconWise v1.9.0 — Default Governance Policy
+# This file defines the governance rules for the default deployment.
+# Override per domain with domain-specific policy files.
+
+policy_id: general_v1_9
+
+# ── Model Lineup ──────────────────────────────────────────────
+# Primary: generates answers
+# Validators: independent verification
+# Challenger: adversarial governance pressure (never answers users)
+
+consensus:
+  min_validators: 1
+  independence_min: 0.6
+  primary:
+    provider: openai
+    model: gpt-4o-mini
+  validators:
+    - provider: grok
+      model: grok-2
+
+# ── Challenger (Groq Compound Beta) ──────────────────────────
+# Runs ONLY when triggered — cost-controlled adversarial review.
+# Produces ChallengePack JSON, not user answers.
+
+challenger:
+  enabled: true
+  provider: groq
+  model: compound-beta
+  triggers:
+    high_stakes: true
+    disagreement_threshold: 0.22
+    on_gate: true
+    low_evidence: true
+  limits:
+    timeout_s: 6
+    max_tokens: 400
+    max_challenges: 10
+
+# ── Evidence Rules ────────────────────────────────────────────
+evidence_rules:
+  min_strength: E1
+
+# ── Replay ────────────────────────────────────────────────────
+replay:
+  strict_required: false
+  retention_years: 7
+
+
+# V9 Resilience Control Plane (optional)
+resilience_policy:
+  enabled: false
+  version: "0.1"
