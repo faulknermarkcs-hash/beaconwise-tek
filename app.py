@@ -9,6 +9,7 @@ import asyncio
 import time
 
 import streamlit as st
+from system_readiness import render_system_readiness, render_governance_context_bar
 from dotenv import load_dotenv
 
 # ----------------------------
@@ -103,6 +104,30 @@ if "restored" not in st.session_state:
     st.session_state.restored = False
 
 sess: SessionState = st.session_state.sess
+
+# --- Governance Context Bar + System Readiness (regulator-friendly) ---
+readiness_report = render_system_readiness(
+    provider=Settings.PROVIDER,
+    model=Settings.MODEL,
+    epack_store_path=Settings.EPACK_STORE_PATH,
+    persist_epacks=Settings.PERSIST_EPACKS,
+    redact_mode=Settings.REDACT_MODE,
+    citation_verify=getattr(Settings, 'CITATION_VERIFY', False),
+    require_evidence_citations=getattr(Settings, 'REQUIRE_EVIDENCE_CITATIONS', True),
+    tecl_available=TECL_AVAILABLE,
+    where='main',
+)
+
+render_governance_context_bar(
+    readiness_report,
+    session_id=sess.session_id,
+    profile=getattr(sess, 'current_profile', 'default'),
+    pending_gate=getattr(getattr(sess, 'pending_gate', None), 'gate', 'none'),
+    audit_on=True,
+    human_finalize_on=True,
+    where='main',
+)
+
 
 # Optional: show restored EPACKs if persistence enabled
 if not st.session_state.restored and Settings.PERSIST_EPACKS:
