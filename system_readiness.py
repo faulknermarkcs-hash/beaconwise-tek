@@ -1,28 +1,3 @@
-# system_readiness.py
-"""
-Regulator-friendly System Readiness Indicator for Streamlit.
-
-Goals:
-- Make runtime readiness visible (no hidden background behavior).
-- Explain *why* the system is READY / DEGRADED / NOT READY.
-- Surface high-signal controls: provider config, keys present, audit persistence, redaction, citations, tools.
-- Optional warmup integration (if you add warmup): reads st.session_state["warmup_status"].
-
-Usage:
-    from system_readiness import render_system_readiness
-
-    render_system_readiness(
-        provider=Settings.PROVIDER,
-        model=Settings.MODEL,
-        epack_store_path=Settings.EPACK_STORE_PATH,
-        persist_epacks=Settings.PERSIST_EPACKS,
-        redact_mode=Settings.REDACT_MODE,
-        citation_verify=Settings.CITATION_VERIFY,
-        require_evidence_citations=Settings.REQUIRE_EVIDENCE_CITATIONS,
-        tecl_available=TECL_AVAILABLE,
-    )
-"""
-
 from __future__ import annotations
 
 import os
@@ -33,9 +8,6 @@ from typing import Dict, List, Optional, Tuple
 import streamlit as st
 
 
-# -----------------------------
-# Types
-# -----------------------------
 @dataclass(frozen=True)
 class ReadinessItem:
     id: str
@@ -52,9 +24,6 @@ class ReadinessReport:
     generated_ts: float
 
 
-# -----------------------------
-# Helpers (checks)
-# -----------------------------
 def _has_env(*keys: str) -> bool:
     for k in keys:
         v = os.getenv(k, "")
@@ -64,12 +33,11 @@ def _has_env(*keys: str) -> bool:
 
 
 def _is_writable_path(path: str) -> Tuple[bool, str]:
-    # Lightweight, regulator-friendly "can we persist audit artifacts?"
     try:
         p = (path or "").strip()
         if not p:
             return False, "No EPACK store path set."
-        # Attempt an append-only open (does not write data unless you do)
+        os.makedirs(os.path.dirname(p) or ".", exist_ok=True)
         with open(p, "a", encoding="utf-8"):
             pass
         return True, f"Writable: {p}"
@@ -79,15 +47,11 @@ def _is_writable_path(path: str) -> Tuple[bool, str]:
 
 def _provider_key_health(provider: str) -> ReadinessItem:
     p = (provider or "mock").lower().strip()
-
-    # You can extend this mapping as your provider adapters expand.
-    # We intentionally check *presence only* (not value) to avoid leaking secrets.
     provider_key_map: Dict[str, Tuple[str, ...]] = {
         "openai": ("OPENAI_API_KEY",),
         "groq": ("GROQ_API_KEY",),
         "anthropic": ("ANTHROPIC_API_KEY",),
         "deepseek": ("DEEPSEEK_API_KEY",),
-        # fallback/compat:
         "mock": tuple(),
     }
 
@@ -101,7 +65,6 @@ def _provider_key_health(provider: str) -> ReadinessItem:
 
     keys = provider_key_map.get(p, tuple())
     if not keys:
-        # Unknown provider: don't fail hard; warn with explicit need.
         return ReadinessItem(
             id="provider_auth",
             label="Provider authentication",
@@ -126,13 +89,8 @@ def _provider_key_health(provider: str) -> ReadinessItem:
 
 
 def _tools_health() -> List[ReadinessItem]:
-    """
-    TEK tools are allowlisted; here we check whether optional external tools
-    are ready without implying they'll be used.
-    """
     items: List[ReadinessItem] = []
 
-    # Safe calc is always available (in-kernel sandbox)
     items.append(
         ReadinessItem(
             id="tool_safe_calc",
@@ -142,7 +100,6 @@ def _tools_health() -> List[ReadinessItem]:
         )
     )
 
-    # Optional web search tools: keys determine readiness
     brave_ok = _has_env("BRAVE_API_KEY")
     items.append(
         ReadinessItem(
@@ -167,14 +124,6 @@ def _tools_health() -> List[ReadinessItem]:
 
 
 def _warmup_health() -> Optional[ReadinessItem]:
-    """
-    Optional: if you add warmup, store results in st.session_state["warmup_status"] like:
-      {
-        "overall": "OK|WARN|FAIL",
-        "detail": "...",
-        "providers": {"openai": {"ok": True, "ms": 123}, ...}
-      }
-    """
     ws = st.session_state.get("warmup_status")
     if not isinstance(ws, dict):
         return None
@@ -205,7 +154,6 @@ def build_readiness_report(
 ) -> ReadinessReport:
     items: List[ReadinessItem] = []
 
-    # Provider/model declared
     p = (provider or "").strip()
     m = (model or "").strip()
 
@@ -223,10 +171,8 @@ def build_readiness_report(
     else:
         items.append(ReadinessItem("model_declared", "Model configured", "OK", f"Model: {m}"))
 
-    # Provider auth key presence
     items.append(_provider_key_health(p))
 
-    # Audit/persistence readiness
     if persist_epacks:
         ok, detail = _is_writable_path(epack_store_path)
         items.append(
@@ -247,7 +193,6 @@ def build_readiness_report(
             )
         )
 
-    # Redaction mode (regulator-friendly default is hash)
     rm = (redact_mode or "off").lower().strip()
     if rm in ("hash", "on"):
         items.append(ReadinessItem("redaction", "Redaction", "OK", f"Mode: {rm}"))
@@ -256,7 +201,6 @@ def build_readiness_report(
     else:
         items.append(ReadinessItem("redaction", "Redaction", "WARN", f"Unknown redaction mode '{rm}'."))
 
-    # Citation governance posture
     if require_evidence_citations:
         items.append(ReadinessItem("citations_required", "Evidence citation requirement", "OK", "Evidence citations required."))
     else:
@@ -271,10 +215,8 @@ def build_readiness_report(
         )
     )
 
-    # Tools
     items.extend(_tools_health())
 
-    # TE-CL module presence
     items.append(
         ReadinessItem(
             id="tecl",
@@ -284,12 +226,10 @@ def build_readiness_report(
         )
     )
 
-    # Optional warmup
     warm = _warmup_health()
     if warm:
         items.append(warm)
 
-    # Compute overall
     has_fail = any(i.status == "FAIL" for i in items)
     has_warn = any(i.status == "WARN" for i in items)
 
@@ -306,30 +246,37 @@ def build_readiness_report(
     return ReadinessReport(overall=overall, summary=summary, items=items, generated_ts=time.time())
 
 
-# -----------------------------
-# Rendering (Streamlit)
-# -----------------------------
 _READINESS_CSS = """
 <style>
-.bw-readiness-bar {
-  display: flex; gap: 10px; align-items: center; flex-wrap: wrap;
-  padding: 10px 12px; border-radius: 14px;
+/* context bar (sticky, thin) */
+.bw-contextbar {
+  position: sticky;
+  top: 0;
+  z-index: 999;
+  padding: 6px 10px;
+  margin: -0.75rem 0 0.75rem 0;
+  border-radius: 12px;
   border: 1px solid rgba(0,0,0,0.10);
+  background: rgba(255,255,255,0.92);
+  backdrop-filter: blur(6px);
+}
+.bw-contextrow { display:flex; align-items:center; justify-content:space-between; gap:10px; flex-wrap:wrap; }
+.bw-left { display:flex; align-items:center; gap:10px; flex-wrap:wrap; }
+.bw-right { display:flex; align-items:center; gap:8px; flex-wrap:wrap; opacity: 0.9;}
+.bw-tag {
+  display:inline-flex; align-items:center; gap:6px;
+  padding: 3px 8px; border-radius: 999px;
+  border: 1px solid rgba(0,0,0,0.10);
+  font-size: 12px; line-height: 1;
   background: rgba(0,0,0,0.02);
 }
-.bw-pill {
-  display: inline-flex; align-items: center; gap: 8px;
-  padding: 6px 10px; border-radius: 999px;
-  border: 1px solid rgba(0,0,0,0.12);
-  font-size: 12px; line-height: 1;
-  background: rgba(255,255,255,0.6);
-}
-.bw-dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; }
-.bw-ok { background: #22c55e; }     /* green */
-.bw-warn { background: #f59e0b; }   /* amber */
-.bw-fail { background: #ef4444; }   /* red */
-.bw-title { font-weight: 700; letter-spacing: 0.2px; }
-.bw-sub { opacity: 0.8; font-size: 12px; }
+.bw-dot { width:8px; height:8px; border-radius:50%; display:inline-block; }
+.bw-ok { background:#22c55e; }     /* green */
+.bw-warn { background:#f59e0b; }   /* amber */
+.bw-fail { background:#ef4444; }   /* red */
+.bw-title { font-weight: 700; letter-spacing: 0.2px; font-size: 12px; }
+.bw-mini { font-size: 12px; opacity: 0.9; }
+.bw-linklike { font-size: 12px; text-decoration: underline; cursor: pointer; }
 </style>
 """
 
@@ -339,6 +286,81 @@ def _dot_class(status: str) -> str:
     if status == "FAIL":
         return "bw-fail"
     return "bw-warn"
+
+
+def _overall_to_status(overall: str) -> str:
+    if overall == "READY":
+        return "OK"
+    if overall == "NOT READY":
+        return "FAIL"
+    return "WARN"
+
+
+def _get_item(report: ReadinessReport, item_id: str) -> Optional[ReadinessItem]:
+    for it in report.items:
+        if it.id == item_id:
+            return it
+    return None
+
+
+def render_governance_context_bar(
+    report: ReadinessReport,
+    *,
+    session_id: str,
+    profile: str,
+    pending_gate: str,
+    audit_on: bool,
+    human_finalize_on: bool,
+    where: str = "main",
+) -> None:
+    """
+    Thin, always-on header strip. Uses the same readiness report.
+    Mirrors the 'governance state obvious at all times' goal.
+    """
+    host = st.sidebar if where == "sidebar" else st
+    host.markdown(_READINESS_CSS, unsafe_allow_html=True)
+
+    status = _overall_to_status(report.overall)
+
+    provider = _get_item(report, "provider_declared")
+    model = _get_item(report, "model_declared")
+    redaction = _get_item(report, "redaction")
+    epack = _get_item(report, "epack_persist")
+
+    def tag(label: str, status_s: str) -> str:
+        return f'<span class="bw-tag"><span class="bw-dot {_dot_class(status_s)}"></span><span class="bw-mini">{label}</span></span>'
+
+    left_bits = [
+        f'<span class="bw-tag"><span class="bw-dot {_dot_class(status)}"></span><span class="bw-title">READINESS: {report.overall}</span></span>',
+        tag(f"Session: {session_id}", "OK"),
+        tag(f"Profile: {profile or 'default'}", "OK"),
+        tag(f"Gate: {pending_gate or 'none'}", "OK" if (pending_gate or "").lower() == "none" else "WARN"),
+    ]
+
+    right_bits = []
+    if provider:
+        right_bits.append(tag(provider.detail.replace("Provider: ", "Prov: "), provider.status))
+    if model:
+        right_bits.append(tag(model.detail.replace("Model: ", "Model: "), model.status))
+    if redaction:
+        right_bits.append(tag(f"Redaction: {redaction.detail.replace('Mode: ','')}", redaction.status))
+    if epack:
+        # keep it short
+        ep = "EPACK: on" if epack.status == "OK" else ("EPACK: off" if "disabled" in epack.detail.lower() else "EPACK: issue")
+        right_bits.append(tag(ep, epack.status))
+
+    right_bits.append(tag(f"Audit: {'on' if audit_on else 'off'}", "OK" if audit_on else "WARN"))
+    right_bits.append(tag(f"Finalize: {'human' if human_finalize_on else 'auto'}", "OK" if human_finalize_on else "WARN"))
+
+    html = f"""
+    <div class="bw-contextbar">
+      <div class="bw-contextrow">
+        <div class="bw-left">{''.join(left_bits)}</div>
+        <div class="bw-right">{''.join(right_bits)}</div>
+      </div>
+    </div>
+    """
+    host.markdown(html, unsafe_allow_html=True)
 
 
 def render_system_readiness(
@@ -353,10 +375,6 @@ def render_system_readiness(
     tecl_available: bool,
     where: str = "main",  # "main" | "sidebar"
 ) -> ReadinessReport:
-    """
-    Renders a regulator-friendly readiness bar and an expandable audit-style details panel.
-    Returns the ReadinessReport (useful for logging into EPACK/system events if desired).
-    """
     report = build_readiness_report(
         provider=provider,
         model=model,
@@ -370,56 +388,39 @@ def render_system_readiness(
 
     host = st.sidebar if where == "sidebar" else st
 
-    host.markdown(_READINESS_CSS, unsafe_allow_html=True)
-
-    # Overall status pill
-    overall_status = "OK" if report.overall == "READY" else ("FAIL" if report.overall == "NOT READY" else "WARN")
-    overall_label = f"SYSTEM READINESS: {report.overall}"
-
-    # Key high-signal pills (keep it sparse for regulators)
-    # Pick a few items to show inline; everything else goes into the expander.
-    def pick(item_id: str) -> Optional[ReadinessItem]:
-        for i in report.items:
-            if i.id == item_id:
-                return i
-        return None
-
-    inline = [
-        pick("provider_declared"),
-        pick("provider_auth"),
-        pick("epack_persist"),
-        pick("redaction"),
-        pick("citation_verify"),
-    ]
-    inline = [i for i in inline if i is not None]
-
-    pills_html = []
-    pills_html.append(
-        f"""
-        <div class="bw-pill">
-          <span class="bw-dot {_dot_class(overall_status)}"></span>
-          <span class="bw-title">{overall_label}</span>
-        </div>
+    # compact pill row (non-sticky) + expander
+    host.markdown(
         """
+<style>
+.bw-readiness-row { display:flex; gap:8px; align-items:center; flex-wrap:wrap;
+  padding: 8px 10px; border-radius: 12px; border:1px solid rgba(0,0,0,0.10); background: rgba(0,0,0,0.02);}
+.bw-pill { display:inline-flex; align-items:center; gap:8px; padding:5px 9px; border-radius: 999px;
+  border:1px solid rgba(0,0,0,0.12); font-size:12px; background: rgba(255,255,255,0.65); }
+.bw-pill .bw-dot { width:8px; height:8px; border-radius:50%; display:inline-block; }
+</style>
+        """,
+        unsafe_allow_html=True,
     )
 
-    for it in inline:
-        pills_html.append(
-            f"""
-            <div class="bw-pill" title="{it.detail}">
-              <span class="bw-dot {_dot_class(it.status)}"></span>
-              <span>{it.label}</span>
-            </div>
-            """
+    overall_status = _overall_to_status(report.overall)
+    pills = [
+        f'<span class="bw-pill"><span class="bw-dot {_dot_class(overall_status)}"></span><b>SYSTEM READINESS:</b> {report.overall}</span>',
+    ]
+
+    # Inline, high-signal items only
+    for item_id in ("provider_auth", "epack_persist", "redaction", "citation_verify"):
+        it = _get_item(report, item_id)
+        if not it:
+            continue
+        pills.append(
+            f'<span class="bw-pill" title="{it.detail}"><span class="bw-dot {_dot_class(it.status)}"></span>{it.label}</span>'
         )
 
-    host.markdown(f"""<div class="bw-readiness-bar">{''.join(pills_html)}</div>""", unsafe_allow_html=True)
+    host.markdown(f'<div class="bw-readiness-row">{"".join(pills)}</div>', unsafe_allow_html=True)
 
     with host.expander("System readiness details (audit-style)", expanded=False):
         host.write(report.summary)
         host.caption(time.strftime("Generated: %Y-%m-%d %H:%M:%S", time.localtime(report.generated_ts)))
-
-        # Render as an audit-style list rather than a marketing dashboard
         for it in report.items:
             icon = "✅" if it.status == "OK" else ("⚠️" if it.status == "WARN" else "⛔")
             host.markdown(f"**{icon} {it.label}**  \n{it.detail}")
