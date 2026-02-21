@@ -1,0 +1,185 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "BeaconWise Decision Object",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_id",
+    "schema_version",
+    "decision_id",
+    "created_at",
+    "context",
+    "input",
+    "routing",
+    "policy",
+    "stages",
+    "output",
+    "integrity",
+    "build"
+  ],
+  "properties": {
+    "schema_id": { "type": "string", "const": "beaconwise-governance/decision" },
+    "schema_version": { "type": "integer", "minimum": 1 },
+
+    "decision_id": { "type": "string", "minLength": 8 },
+    "created_at": { "type": "string", "description": "ISO-8601 UTC timestamp" },
+
+    "context": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["session_id", "workspace_id"],
+      "properties": {
+        "session_id": { "type": "string" },
+        "workspace_id": { "type": "string" },
+        "user_id": { "type": ["string", "null"] }
+      }
+    },
+
+    "input": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["prompt_hash"],
+      "properties": {
+        "prompt_hash": { "type": "string", "minLength": 64, "maxLength": 64 },
+        "attachments": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["artifact_hash", "mime_type"],
+            "properties": {
+              "artifact_hash": { "type": "string" },
+              "mime_type": { "type": "string" },
+              "name": { "type": ["string", "null"] }
+            }
+          }
+        }
+      }
+    },
+
+    "routing": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["mode", "strategy", "providers"],
+      "properties": {
+        "mode": { "type": "string" },
+        "strategy": { "type": "string" },
+        "providers": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["name", "model", "role", "enabled"],
+            "properties": {
+              "name": { "type": "string" },
+              "model": { "type": "string" },
+              "role": { "type": "string" },
+              "enabled": { "type": "boolean" },
+              "timeout_s": { "type": ["number", "null"] }
+            }
+          }
+        }
+      }
+    },
+
+    "policy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["policy_id", "policy_hash"],
+      "properties": {
+        "policy_id": { "type": "string" },
+        "policy_hash": { "type": "string", "minLength": 64, "maxLength": 64 },
+        "profile": { "type": ["string", "null"] },
+        "constraints_applied": {
+          "type": "array",
+          "items": { "type": "string" }
+        }
+      }
+    },
+
+    "stages": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["primary", "challenger", "evidence", "arbiter"],
+      "properties": {
+        "preflight": { "$ref": "#/definitions/stage_result" },
+        "primary": { "$ref": "#/definitions/stage_result" },
+        "challenger": { "$ref": "#/definitions/stage_result" },
+        "evidence": { "$ref": "#/definitions/stage_result" },
+        "arbiter": { "$ref": "#/definitions/stage_result" },
+        "decision": { "$ref": "#/definitions/stage_result" }
+      }
+    },
+
+    "output": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["final_text_hash"],
+      "properties": {
+        "final_text_hash": { "type": "string", "minLength": 64, "maxLength": 64 },
+        "final_format": { "type": ["string", "null"] },
+        "confidence": { "type": ["number", "null"], "minimum": 0, "maximum": 1 },
+        "dissent": {
+          "type": "object",
+          "additionalProperties": true
+        }
+      }
+    },
+
+    "integrity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["canonical_payload_hash", "canonical_payload_hash_alg"],
+      "properties": {
+        "canonical_payload_hash_alg": { "type": "string", "const": "sha256" },
+        "canonical_payload_hash": { "type": "string", "minLength": 64, "maxLength": 64 },
+
+        "prev_decision_hash": { "type": ["string", "null"] },
+        "epack_block_hash": { "type": ["string", "null"] }
+      }
+    },
+
+    "build": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kernel", "kernel_version", "manifest_hash"],
+      "properties": {
+        "kernel": { "type": "string" },
+        "kernel_version": { "type": "string" },
+        "manifest_hash": { "type": "string" }
+      }
+    }
+  },
+
+  "definitions": {
+    "stage_result": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["status"],
+      "properties": {
+        "status": { "type": "string" },
+        "started_at": { "type": ["number", "null"] },
+        "ended_at": { "type": ["number", "null"] },
+        "provider": { "type": ["string", "null"] },
+        "model": { "type": ["string", "null"] },
+
+        "output_text_hash": { "type": ["string", "null"] },
+        "error": { "type": ["string", "null"] },
+
+        "citations": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": true
+          }
+        },
+
+        "extra": {
+          "type": "object",
+          "additionalProperties": true
+        }
+      }
+    }
+  }
+}
