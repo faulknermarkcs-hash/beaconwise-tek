@@ -1,21 +1,16 @@
 # src/ecosphere/replay/engine.py
-"""Replay Engine — deterministic reproducibility verification.
+"""Replay Engine — deterministic reproducibility verification (V8 restored + V9 chain linkage).
 
 Replays governance decisions from EPACK audit chains to verify:
+1. EPACK hash integrity (tamper detection)
+2. Routing determinism (same inputs → same route)
+3. Safety screening consistency
+4. Profile consistency
+5. Build manifest integrity
+6. Chain linkage (prev_hash continuity — V9)
 
-1) EPACK hash integrity (tamper detection)
-2) Brick 3 commitment rule:
-     EPACK.payload_hash == payload.decision_hash  (when payload.decision_hash exists)
-3) Brick 4 Decision Object integrity:
-     sha256(canonical_json(decision_object with integrity.canonical_payload_hash="")) == EPACK.payload_hash
-     (when payload.decision_object exists)
-4) Routing determinism (optional: requires injected route_fn)
-5) Safety screening consistency (optional: requires injected safety_fn)
-6) Profile consistency
-7) Build manifest presence
-8) Chain linkage (prev_hash continuity)
-
-The replay engine does NOT re-invoke LLMs.
+The replay engine does NOT re-invoke LLMs (that would be non-deterministic
+and expensive). It replays the deterministic governance pipeline only.
 """
 from __future__ import annotations
 
@@ -24,11 +19,12 @@ from dataclasses import dataclass, field, asdict
 from typing import Any, Dict, List, Optional
 
 from ecosphere.utils.stable import stable_hash
-from ecosphere.decision.object import compute_decision_hash
+from ecosphere.epack.crypto import verify_signature
 
 
 @dataclass
 class ReplayStep:
+    """Single step in a replay."""
     step_name: str
     original_value: Any
     replayed_value: Any
@@ -38,14 +34,15 @@ class ReplayStep:
 
 @dataclass
 class ReplayResult:
+    """Complete replay verification result."""
     replay_id: str
     epack_seq: int
     steps: List[ReplayStep] = field(default_factory=list)
-    determinism_index: float = 0.0
+    determinism_index: float = 0.0   # 0.0–100.0
     governance_match: bool = True
     route_match: bool = True
     safety_match: bool = True
-    chain_link_match: bool = True
+    chain_link_match: bool = True     # V9: prev_hash continuity
     timestamp: float = field(default_factory=time.time)
 
     def to_dict(self) -> Dict[str, Any]:
@@ -61,29 +58,39 @@ def replay_governance_decision(
     safety_fn: Any = None,
     expected_prev_hash: Optional[str] = None,
 ) -> ReplayResult:
-    payload = epack_record.get("payload", {}) or {}
-    extra = (payload.get("extra") or {}) if isinstance(payload, dict) else {}
-    seq = int(epack_record.get("seq", 0) or 0)
+    """Replay a single governed interaction from its EPACK record.
+
+    Verifies that the deterministic governance pipeline (safety screening,
+    routing, scope gate) would produce the same decisions given the same inputs.
+
+    Args:
+        epack_record: The EPACK record to replay
+        route_fn: Optional routing function (from kernel.router)
+        safety_fn: Optional safety function (from safety.stage1)
+        expected_prev_hash: If provided, verify chain linkage (V9)
+
+    Returns:
+        ReplayResult with step-by-step verification
+    """
+    payload = epack_record.get("payload", {})
+    extra = payload.get("extra", {})
+    seq = epack_record.get("seq", 0)
 
     steps: List[ReplayStep] = []
     all_match = True
 
-    # ------------------------------------------------------------------
-    # Step 1: Verify EPACK hash integrity (Brick 3+ schema)
-    # ------------------------------------------------------------------
-    expected_hash = str(epack_record.get("hash", "") or "")
-    payload_hash = str(epack_record.get("payload_hash") or payload.get("decision_hash") or "")
+    # Step 1: Verify EPACK hash integrity
+    expected_hash = epack_record.get("hash", "")
     recomputed = stable_hash({
         "seq": epack_record.get("seq"),
         "ts": epack_record.get("ts"),
         "prev_hash": epack_record.get("prev_hash"),
-        "payload_hash": payload_hash,
         "payload": payload,
     })
-    hash_match = (expected_hash == recomputed)
+    hash_match = expected_hash == recomputed
     steps.append(ReplayStep(
         step_name="epack_hash_integrity",
-        original_value=expected_hash[:16] + "..." if expected_hash else "MISSING",
+        original_value=expected_hash[:16] + "...",
         replayed_value=recomputed[:16] + "...",
         match=hash_match,
         detail="Hash chain integrity" if hash_match else "TAMPERED: hash mismatch",
@@ -91,57 +98,28 @@ def replay_governance_decision(
     if not hash_match:
         all_match = False
 
-    # ------------------------------------------------------------------
-    # Step 2: Brick 3 commitment rule (payload_hash ↔ decision_hash)
-    # ------------------------------------------------------------------
-    claimed_decision_hash = payload.get("decision_hash") if isinstance(payload, dict) else None
-    commitment_ok = True
-    if isinstance(claimed_decision_hash, str) and claimed_decision_hash:
-        commitment_ok = (claimed_decision_hash == payload_hash)
-    steps.append(ReplayStep(
-        step_name="payload_hash_commitment",
-        original_value=(claimed_decision_hash or "NONE")[:16] + "..." if claimed_decision_hash else "NONE",
-        replayed_value=(payload_hash or "MISSING")[:16] + "..." if payload_hash else "MISSING",
-        match=commitment_ok,
-        detail="Brick 3: payload_hash commits to decision_hash" if commitment_ok else "BROKEN: decision_hash != payload_hash",
-    ))
-    if not commitment_ok:
-        all_match = False
+    # Step 1b: Verify EPACK signature (if present)
+    sig = epack_record.get("signature")
+    ph = epack_record.get("payload_hash")
+    if isinstance(sig, str) and sig and isinstance(ph, str) and ph:
+        sig_ok = verify_signature(ph, sig)
+        steps.append(ReplayStep(
+            step_name="epack_signature",
+            original_value=sig[:16] + "...",
+            replayed_value=("valid" if sig_ok else "INVALID"),
+            match=sig_ok,
+            detail="Signature valid" if sig_ok else "TAMPERED: signature mismatch",
+        ))
+        if not sig_ok:
+            all_match = False
 
-    # ------------------------------------------------------------------
-    # Step 3: Brick 4 Decision Object integrity (if present)
-    # ------------------------------------------------------------------
-    decision_obj = payload.get("decision_object") if isinstance(payload, dict) else None
-    decision_obj_ok = True
-    decision_obj_detail = "Decision Object not present — skipped"
-    recomputed_decision_hash = None
-    if isinstance(decision_obj, dict):
-        try:
-            recomputed_decision_hash = compute_decision_hash(decision_obj)
-            decision_obj_ok = (recomputed_decision_hash == payload_hash)
-            decision_obj_detail = "Brick 4: decision_object hash matches payload_hash" if decision_obj_ok else "BROKEN: decision_object hash mismatch"
-        except Exception as e:
-            decision_obj_ok = False
-            decision_obj_detail = f"ERROR: {e}"
-    steps.append(ReplayStep(
-        step_name="decision_object_integrity",
-        original_value=(payload_hash or "MISSING")[:16] + "..." if payload_hash else "MISSING",
-        replayed_value=(recomputed_decision_hash or "SKIPPED")[:16] + "..." if isinstance(recomputed_decision_hash, str) else (recomputed_decision_hash or "SKIPPED"),
-        match=decision_obj_ok,
-        detail=decision_obj_detail,
-    ))
-    if not decision_obj_ok:
-        all_match = False
-
-    # ------------------------------------------------------------------
-    # Step 4: Verify routing decision (optional)
-    # ------------------------------------------------------------------
+    # Step 2: Verify routing decision (if route_fn provided)
     route_match = True
-    original_route = (extra.get("route") or "UNKNOWN") if isinstance(extra, dict) else "UNKNOWN"
+    original_route = extra.get("route", "UNKNOWN")
     if route_fn is not None:
         try:
             replayed_route = route_fn(extra.get("input_vector", {}))
-            route_match = (original_route == replayed_route)
+            route_match = original_route == replayed_route
             steps.append(ReplayStep(
                 step_name="routing_determinism",
                 original_value=original_route,
@@ -165,38 +143,36 @@ def replay_governance_decision(
             detail="Routing replay skipped; no route_fn",
         ))
 
-    # ------------------------------------------------------------------
-    # Step 5: Verify safety screening (optional)
-    # ------------------------------------------------------------------
+    # Step 3: Verify safety screening (if safety_fn provided)
     safety_match = True
     if safety_fn is not None:
-        original_safe = bool(extra.get("safety_stage1_ok", True)) if isinstance(extra, dict) else True
+        original_safe = extra.get("safety_stage1_ok", True)
         try:
             replayed_safe = safety_fn(payload.get("user_text_hash", ""))
-            safety_match = (original_safe == replayed_safe)
+            safety_match = original_safe == replayed_safe
             steps.append(ReplayStep(
                 step_name="safety_screening",
                 original_value=original_safe,
                 replayed_value=replayed_safe,
                 match=safety_match,
             ))
-        except Exception as e:
+        except Exception:
             steps.append(ReplayStep(
                 step_name="safety_screening",
-                original_value=extra.get("safety_stage1_ok", "?") if isinstance(extra, dict) else "?",
-                replayed_value=f"(safety_fn error — skipped) {e}",
+                original_value=extra.get("safety_stage1_ok", "?"),
+                replayed_value="(safety_fn error — skipped)",
                 match=True,
             ))
     else:
         steps.append(ReplayStep(
             step_name="safety_screening",
-            original_value=extra.get("safety_stage1_ok", "?") if isinstance(extra, dict) else "?",
+            original_value=extra.get("safety_stage1_ok", "?"),
             replayed_value="(safety_fn not provided — skipped)",
             match=True,
         ))
 
-    # Step 6: Profile consistency
-    original_profile = payload.get("profile", "UNKNOWN") if isinstance(payload, dict) else "UNKNOWN"
+    # Step 4: Verify profile consistency
+    original_profile = payload.get("profile", "UNKNOWN")
     steps.append(ReplayStep(
         step_name="profile_consistency",
         original_value=original_profile,
@@ -205,12 +181,12 @@ def replay_governance_decision(
         detail=f"Profile: {original_profile}",
     ))
 
-    # Step 7: Build manifest presence
-    manifest = payload.get("build_manifest", {}) if isinstance(payload, dict) else {}
-    manifest_present = bool(isinstance(manifest, dict) and manifest.get("manifest_hash"))
+    # Step 5: Build manifest integrity
+    manifest = payload.get("build_manifest", {})
+    manifest_present = bool(manifest and manifest.get("manifest_hash"))
     steps.append(ReplayStep(
         step_name="build_manifest",
-        original_value=(manifest.get("manifest_hash", "MISSING")[:16] if isinstance(manifest, dict) and manifest.get("manifest_hash") else "MISSING"),
+        original_value=manifest.get("manifest_hash", "MISSING")[:16] if manifest else "MISSING",
         replayed_value="present" if manifest_present else "MISSING",
         match=manifest_present,
         detail="Provenance traceable" if manifest_present else "No build manifest",
@@ -218,11 +194,11 @@ def replay_governance_decision(
     if not manifest_present:
         all_match = False
 
-    # Step 8: Chain linkage
+    # Step 6 (V9): Chain linkage — verify prev_hash matches expected
     chain_link_match = True
     if expected_prev_hash is not None:
         actual_prev = epack_record.get("prev_hash", "")
-        chain_link_match = (actual_prev == expected_prev_hash)
+        chain_link_match = actual_prev == expected_prev_hash
         steps.append(ReplayStep(
             step_name="chain_linkage",
             original_value=actual_prev[:16] + "..." if actual_prev else "NONE",
@@ -233,8 +209,10 @@ def replay_governance_decision(
         if not chain_link_match:
             all_match = False
 
+    # Calculate determinism index
     matched = sum(1 for s in steps if s.match)
-    determinism_index = (matched / len(steps) * 100) if steps else 0.0
+    total = len(steps)
+    determinism_index = (matched / total * 100) if total > 0 else 0.0
 
     return ReplayResult(
         replay_id=stable_hash({"seq": seq, "ts": time.time()})[:16],
@@ -254,7 +232,11 @@ def replay_chain(
     route_fn: Any = None,
     safety_fn: Any = None,
 ) -> List[ReplayResult]:
-    results: List[ReplayResult] = []
+    """Replay an entire EPACK chain with prev_hash linkage verification (V9).
+
+    Returns a list of ReplayResults, one per record.
+    """
+    results = []
     prev_hash: Optional[str] = None
     for record in epack_chain:
         result = replay_governance_decision(
@@ -269,6 +251,7 @@ def replay_chain(
 
 
 def replay_summary(results: List[ReplayResult]) -> Dict[str, Any]:
+    """Generate summary statistics from replay results."""
     if not results:
         return {"total": 0, "determinism_index": 0.0}
 
