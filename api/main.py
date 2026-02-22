@@ -3,6 +3,7 @@
 
 Endpoints:
   GET  /              Health check
+  POST /query         Governed query (two-stage consensus)
   GET  /constitution  Machine-readable constitution
   GET  /schema/{name} Governance schema by name
   GET  /schemas       List all governance schemas
@@ -11,20 +12,18 @@ Endpoints:
   GET  /policy        Active policy + validation errors
   POST /verify-chain  Verify EPACK chain integrity
   POST /replay        Replay governance decision from EPACK
-
-Optional:
-  POST /resilience/decide  Recovery decision (if api/resilience.py is present)
 """
 from __future__ import annotations
 
 import os
 import sys
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 
 # Ensure src is on path (repo_root/src)
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
 from fastapi import FastAPI, HTTPException
+from pydantic import BaseModel
 
 # ----------------------------
 # Optional routers
@@ -46,6 +45,9 @@ from ecosphere.governance.dsl_loader import load_policy, validate_policy
 from ecosphere.replay.engine import replay_governance_decision, replay_summary
 from ecosphere.kernel.provenance import current_manifest
 
+# ✅ two-stage consensus
+from ecosphere.consensus.orchestrator.flow import run_two_stage_consensus
+
 # ----------------------------
 # App
 # ----------------------------
@@ -58,15 +60,20 @@ app = FastAPI(
 if resilience_router is not None:
     app.include_router(resilience_router, prefix="/resilience", tags=["resilience"])
 
-# Global metrics instance
 _metrics = GovernanceMetrics()
 
-# ----------------------------
-# Routes
-# ----------------------------
+
+class QueryBody(BaseModel):
+    text: str
+    primary_model: Optional[str] = None
+    challenger_model: Optional[str] = None
+    arbiter_model: Optional[str] = None
+    workspace_id: Optional[str] = None
+    session_id: Optional[str] = None
+
+
 @app.get("/")
 def health():
-    """Health check + version info."""
     m = current_manifest()
     return {
         "status": "BeaconWise v1.9.0 running",
@@ -78,7 +85,6 @@ def health():
 
 @app.get("/constitution")
 def constitution():
-    """Machine-readable governance constitution."""
     inv_list = get_constitution()
     return {
         "constitution_hash": get_constitution_hash(),
@@ -98,12 +104,10 @@ def constitution():
 
 @app.get("/schema/{name}")
 def schema(name: str):
-    """Retrieve governance schema by name."""
     try:
         s = get_schema(name)
     except KeyError:
         s = None
-
     if s is None:
         raise HTTPException(status_code=404, detail=f"Schema '{name}' not found")
     return s
@@ -111,70 +115,67 @@ def schema(name: str):
 
 @app.get("/schemas")
 def all_schemas():
-    """List all governance schemas (name + version + schema)."""
-    return {
-        "schemas": get_all_schemas(),
-    }
+    return {"schemas": get_all_schemas()}
 
 
 @app.get("/metrics")
 def metrics():
-    """Current governance metrics dashboard."""
     return _metrics.dashboard()
 
 
 @app.get("/manifest")
 def manifest():
-    """Build provenance manifest."""
     return current_manifest()
 
 
 @app.get("/policy")
 def policy():
-    """Current active governance policy (plus validation)."""
     policy_path = os.environ.get("BEACONWISE_POLICY", "policies/default.yaml")
     p = load_policy(policy_path)
     errors = validate_policy(p)
-    return {
-        "policy": p,
-        "valid": len(errors) == 0,
-        "errors": errors,
-    }
+    return {"policy": p, "valid": len(errors) == 0, "errors": errors}
 
 
 @app.post("/verify-chain")
 def verify_chain(payload: Dict[str, Any]):
-    """
-    Verify EPACK chain integrity.
-
-    Expected payload example:
-      {"epack_path": "path/to/epacks.jsonl"}   OR
-      {"epack_id": "abc123", "store": "postgres"}  (depending on your implementation)
-    """
     return verify_epack_chain(payload)
 
 
 @app.post("/replay")
 def replay(payload: Dict[str, Any]):
-    """
-    Replay governance decision from EPACK.
-
-    Expected payload example:
-      {"epack_id": "abc123", "mode": "strict"}
-    """
     result = replay_governance_decision(payload)
-    return {
-        "result": result,
-        "summary": replay_summary(result) if result is not None else None,
-    }
+    return {"result": result, "summary": replay_summary(result) if result is not None else None}
 
 
 @app.post("/query")
-def query(_: Dict[str, Any]):
-    """
-    Governed query (full pipeline).
-    """
-    raise HTTPException(
-        status_code=501,
-        detail="POST /query not wired in this build. Wire to kernel pipeline entrypoint.",
-    )
+def query(body: QueryBody):
+    user_text = (body.text or "").strip()
+    if not user_text:
+        raise HTTPException(status_code=400, detail="text is required")
+
+    primary = body.primary_model or os.getenv("TEK_PRIMARY_MODEL", "gpt-4o")
+    challenger = body.challenger_model or os.getenv("TEK_CHALLENGER_MODEL", "claude-sonnet-4-20250514")
+    arbiter = body.arbiter_model or os.getenv("TEK_ARBITER_MODEL", "llama-3.3-70b-versatile")
+
+    try:
+        result = run_two_stage_consensus(
+            user_text,
+            primary_model=primary,
+            challenger_model=challenger,
+            arbiter_model=arbiter,
+        )
+        if isinstance(result, dict):
+            final = result.get("final") or result.get("answer") or result.get("output")
+        else:
+            final = None
+
+        return {
+            "ok": True,
+            "final": final if final is not None else str(result),
+            "result": result,
+            "models": {"primary": primary, "challenger": challenger, "arbiter": arbiter},
+            "workspace_id": body.workspace_id,
+            "session_id": body.session_id,
+        }
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"TEK consensus failed: {type(exc).__name__}: {exc}")
