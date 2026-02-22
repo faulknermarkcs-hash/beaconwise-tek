@@ -1,6 +1,7 @@
 # src/ecosphere/providers/factory.py
 from __future__ import annotations
 
+from functools import lru_cache
 import os
 
 from ecosphere.config import Settings
@@ -103,6 +104,7 @@ class OpenAIProvider(LLMProvider):
         return GenerationResult(text=text, provider="openai", model=str(cfg.model), usage=usage)
 
 
+@lru_cache(maxsize=1)
 def make_llm_provider() -> LLMProvider:
     """
     Provider selection via Settings.PROVIDER (ECOSPHERE_PROVIDER):
