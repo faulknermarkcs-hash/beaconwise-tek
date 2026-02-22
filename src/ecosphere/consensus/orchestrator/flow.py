@@ -10,7 +10,7 @@ from typing import Any, Dict, Optional, Union
 from pydantic import ValidationError
 
 from ecosphere.consensus.adapters.factory import build_adapter
-from ecosphere.consensus.config import ConsensusConfig, ARU
+from ecosphere.consensus.config import ConsensusConfig, ARU, ModelSpec, DebateConfig, DEFAULT_PROMPTS
 from ecosphere.consensus.ledger.hooks import emit_stage_event
 from ecosphere.consensus.schemas import PrimaryOutput, SynthesizerOutput
 from ecosphere.consensus.verification.types import VerificationContext, PUBLIC_CONTEXT
@@ -448,3 +448,122 @@ def run_consensus(
         },
     )
     return result
+
+
+# ---------------------------------------------------------------------------
+# run_two_stage_consensus — convenience wrapper for api/main.py
+# ---------------------------------------------------------------------------
+
+def _model_str_to_spec(model_str: str, timeout_s: int = 90) -> ModelSpec:
+    """
+    Parse a model identifier into a ModelSpec.
+
+    Accepts two formats:
+      - "provider:model-name"   e.g. "openai:gpt-4o"
+      - "model-name"            e.g. "gpt-4o" (provider auto-detected)
+    """
+    if ":" in model_str:
+        provider, model = model_str.split(":", 1)
+        return ModelSpec(provider=provider.strip(), model=model.strip(), timeout_s=timeout_s)
+
+    m = model_str.lower()
+    if "claude" in m:
+        provider = "anthropic"
+    elif "gpt" in m or m.startswith("o1") or m.startswith("o3") or m.startswith("o4"):
+        provider = "openai"
+    elif "llama" in m or "mixtral" in m or "gemma" in m or "qwen" in m:
+        provider = "groq"
+    elif "deepseek" in m:
+        provider = "deepseek"
+    elif "gemini" in m:
+        provider = "google"
+    else:
+        provider = "openai"
+
+    return ModelSpec(provider=provider, model=model_str, timeout_s=timeout_s)
+
+
+def run_two_stage_consensus(
+    user_text: str,
+    *,
+    primary_model: str = "gpt-4o",
+    challenger_model: str = "claude-sonnet-4-20250514",
+    arbiter_model: str = "llama-3.3-70b-versatile",
+    epack: Optional[str] = None,
+    run_id: Optional[str] = None,
+    high_stakes: bool = False,
+) -> dict:
+    """
+    Parallel 3-stage debate pipeline, callable from api/main.py.
+
+    Stage 1 — Primary + Challenger run in parallel (asyncio)
+    Stage 2 — Arbiter synthesises with full context
+
+    Model strings accept 'provider:model' or bare model names (provider
+    is auto-detected from common prefixes).
+
+    Returns a plain dict with keys:
+        final, answer, status, run_id, epack, timings, debate_outputs, error, gate
+    """
+    import uuid as _uuid
+
+    rid = run_id or _uuid.uuid4().hex
+    ep  = epack  or _uuid.uuid4().hex[:16]
+
+    primary_spec    = _model_str_to_spec(primary_model,    timeout_s=90)
+    challenger_spec = _model_str_to_spec(challenger_model, timeout_s=90)
+    arbiter_spec    = _model_str_to_spec(arbiter_model,    timeout_s=90)
+
+    debate = DebateConfig(
+        defender_model=primary_spec,
+        critic_model=challenger_spec,
+        synthesizer_model=arbiter_spec,
+    )
+
+    config = ConsensusConfig(
+        profile_name="TWO_STAGE",
+        primary=primary_spec,
+        prompts=DEFAULT_PROMPTS,
+        primary_temperature=0.0,
+        primary_timeout_s=90,
+        max_repair_attempts=1,
+        enable_debate=True,
+        debate=debate,
+    )
+
+    result = run_consensus(
+        user_query=user_text,
+        epack=ep,
+        config=config,
+        run_id=rid,
+        high_stakes=high_stakes,
+    )
+
+    # Extract a human-readable final answer
+    final_answer: Optional[str] = None
+    if result.output is not None:
+        if hasattr(result.output, "answer"):
+            final_answer = result.output.answer
+        else:
+            try:
+                dumped = result.output.model_dump()
+                final_answer = (
+                    dumped.get("answer")
+                    or dumped.get("synthesis")
+                    or str(dumped)
+                )
+            except Exception:
+                final_answer = str(result.output)
+
+    return {
+        "final":         final_answer,
+        "answer":        final_answer,
+        "status":        result.status,
+        "run_id":        result.run_id,
+        "epack":         result.epack,
+        "timings":       result.timings,
+        "debate_outputs": result.debate_outputs,
+        "error":         result.error,
+        "gate":          result.gate,
+    }
+
