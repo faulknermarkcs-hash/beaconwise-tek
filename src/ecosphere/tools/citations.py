@@ -30,6 +30,11 @@ PUBMED_ESUMMARY = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esummary.fcgi"
 DOI_RE = re.compile(r"\b10\.\d{4,9}/[-._;()/:A-Z0-9]+\b", re.IGNORECASE)
 
 
+def _evidence_id(identifier: str) -> str:
+    """Deterministic evidence id for Brick 8 supply-chain integrity."""
+    return stable_hash({"evidence": str(identifier or "").strip().lower()})[:16]
+
+
 @dataclass(frozen=True)
 class VerificationEvent:
     idx: int
@@ -305,6 +310,7 @@ def verify_citations(
                     {
                         "fingerprint": _fingerprint(c),
                         "identifier": doi,
+                        "evidence_id": _evidence_id(doi),
                         "verification_status": "verified_reference",
                         "method": "identifier_only",
                         "resolved_ts": int(time.time()),
@@ -331,10 +337,12 @@ def verify_citations(
                             {
                                 "fingerprint": _fingerprint(c),
                                 "identifier": doi2,
+                                "evidence_id": _evidence_id(doi2),
                                 "verification_status": "verified_reference",
                                 "method": "crossref",
                                 "resolved_ts": int(time.time()),
                                 "meta_hash": stable_hash({"title": c.get("title"), "authors_or_org": c.get("authors_or_org"), "year": c.get("year")}),
+                                "resolved_meta_hash": stable_hash({"doi": doi2, "title": best.get("title"), "container-title": best.get("container-title"), "issued": best.get("issued")}),
                             }
                         )
                         patched.append(c)
@@ -359,10 +367,12 @@ def verify_citations(
                             {
                                 "fingerprint": _fingerprint(c),
                                 "identifier": ident,
+                                "evidence_id": _evidence_id(ident),
                                 "verification_status": "verified_reference",
                                 "method": "pubmed",
                                 "resolved_ts": int(time.time()),
                                 "meta_hash": stable_hash({"title": c.get("title"), "authors_or_org": c.get("authors_or_org"), "year": c.get("year")}),
+                                "resolved_meta_hash": stable_hash({"pmid": pmid, "title": summ.get("title"), "source": summ.get("source"), "pubdate": summ.get("pubdate")}),
                             }
                         )
                         patched.append(c)
