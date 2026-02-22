@@ -3,7 +3,6 @@
 
 Endpoints:
   GET  /              Health check
-  POST /query         Governed query (full pipeline)
   GET  /constitution  Machine-readable constitution
   GET  /schema/{name} Governance schema by name
   GET  /schemas       List all governance schemas
@@ -20,49 +19,32 @@ from __future__ import annotations
 
 import os
 import sys
-from typing import Any, Dict, Optional
+from typing import Any, Dict
 
 # Ensure src is on path (repo_root/src)
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
-try:
-    from fastapi import FastAPI, HTTPException
-except ImportError:
-    # Minimal stubs for environments without FastAPI (keeps import-time from exploding)
-    class FastAPI:
-        def __init__(self, **kwargs): ...
-        def get(self, path):  # noqa: D401
-            return lambda fn: fn
-        def post(self, path):  # noqa: D401
-            return lambda fn: fn
-        def include_router(self, *args, **kwargs):
-            return None
-
-    class HTTPException(Exception):
-        def __init__(self, status_code: int = 500, detail: str = ""):
-            super().__init__(detail)
-
+from fastapi import FastAPI, HTTPException
 
 # ----------------------------
 # Optional routers
 # ----------------------------
 try:
     from api.resilience import router as resilience_router  # type: ignore
-except Exception:
+except Exception as e:
     resilience_router = None
-
+    print("RESILIENCE IMPORT FAILED:", repr(e))
 
 # ----------------------------
 # Core imports (src/ecosphere)
 # ----------------------------
 from ecosphere.governance.constitution import get_constitution, get_constitution_hash
-from ecosphere.governance.schema import get_all_schemas, get_schema, get_schema_version
+from ecosphere.governance.schema import get_all_schemas, get_schema
 from ecosphere.governance.metrics import GovernanceMetrics
 from ecosphere.governance.proof import verify_epack_chain
 from ecosphere.governance.dsl_loader import load_policy, validate_policy
 from ecosphere.replay.engine import replay_governance_decision, replay_summary
 from ecosphere.kernel.provenance import current_manifest
-
 
 # ----------------------------
 # App
@@ -72,29 +54,12 @@ app = FastAPI(
     description="Deterministic governance infrastructure for intelligence systems",
     version="1.9.0",
 )
-# Optional routers
-try:
-    from api.resilience import router as resilience_router
-except Exception as e:
-    resilience_router = None
-    print("RESILIENCE IMPORT FAILED:", repr(e))
 
-app = FastAPI(
-    title="BeaconWise v1.9.0 API",
-    description="Deterministic governance infrastructure for intelligence systems",
-    version="1.9.0",
-)
-
-if resilience_router is not None:
-    app.include_router(resilience_router, prefix="/resilience", tags=["resilience"])
-  
-# ✅ Register optional router(s) AFTER app creation
 if resilience_router is not None:
     app.include_router(resilience_router, prefix="/resilience", tags=["resilience"])
 
 # Global metrics instance
 _metrics = GovernanceMetrics()
-
 
 # ----------------------------
 # Routes
@@ -134,7 +99,11 @@ def constitution():
 @app.get("/schema/{name}")
 def schema(name: str):
     """Retrieve governance schema by name."""
-    s = get_schema(name)
+    try:
+        s = get_schema(name)
+    except KeyError:
+        s = None
+
     if s is None:
         raise HTTPException(status_code=404, detail=f"Schema '{name}' not found")
     return s
@@ -142,9 +111,8 @@ def schema(name: str):
 
 @app.get("/schemas")
 def all_schemas():
-    """List all governance schemas."""
+    """List all governance schemas (name + version + schema)."""
     return {
-        "version": get_schema_version(),
         "schemas": get_all_schemas(),
     }
 
@@ -202,18 +170,11 @@ def replay(payload: Dict[str, Any]):
 
 
 @app.post("/query")
-def query(payload: Dict[str, Any]):
+def query(_: Dict[str, Any]):
     """
     Governed query (full pipeline).
-
-    NOTE:
-    This is a thin wrapper. Your actual pipeline entrypoint may differ.
-    Keep this endpoint if your repo already has a kernel pipeline handler.
-
-    Expected payload example:
-      {"text": "...", "tier": "patient", "context": {...}}
     """
-    # If your repo has a canonical pipeline entrypoint, wire it here.
-    # For now, keep as an explicit "not implemented" to avoid lying in prod.
-    raise HTTPException(status_code=501, detail="POST /query not wired in this build. Wire to kernel pipeline entrypoint.")
-
+    raise HTTPException(
+        status_code=501,
+        detail="POST /query not wired in this build. Wire to kernel pipeline entrypoint.",
+    )
