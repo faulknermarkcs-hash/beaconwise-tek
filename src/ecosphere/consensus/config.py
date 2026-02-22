@@ -157,6 +157,7 @@ DEFAULT_PROMPTS = PromptBundle(
         "The following text was supposed to be JSON for PrimaryOutput, but it was invalid.\n"
         "Rewrite it as valid JSON ONLY, matching PrimaryOutput exactly.\n"
         "RUN_ID={RUN_ID} EPACK={EPACK} ARU={ARU}.\n"
-        "Invalid text:\n{BAD_TEXT}\n"
+        "Invalid text:\n{BAD_OUTPUT}\n"
     ),
 )
+
