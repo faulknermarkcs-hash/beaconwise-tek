@@ -9,13 +9,6 @@ from ecosphere.utils.stable import stable_hash
 
 @dataclass(frozen=True)
 class EPACK:
-    """Replayable audit record.
-
-    Brick 3 alignment:
-      - payload_hash is the cryptographic commitment to the governed Decision Object
-        (Decision canonical sha256 hash), when available.
-      - hash is the EPACK chain record hash (stable_hash over header + payload + payload_hash).
-    """
     seq: int
     ts: float
     prev_hash: str
@@ -31,22 +24,19 @@ def new_epack(
     *,
     payload_hash_override: Optional[str] = None,
 ) -> EPACK:
-    """Create a new EPACK record.
+    """Create a new EPACK block.
 
-    If payload_hash_override is provided, it becomes `payload_hash`.
-    Otherwise, we default to:
-      - payload.get("decision_hash") when present
-      - else stable_hash(payload)
+    Brick 3+ semantics:
+      - payload_hash is the stable hash of the payload (or an override)
+      - epack hash chains {seq, ts, prev_hash, payload_hash} (not full payload)
+        to avoid replay brittleness and keep the chain deterministic even if
+        payload includes large nested structures.
 
-    This allows TEK to interoperate with Commons Brick 3 semantics where the
-    audit chain commits to the Decision Object hash.
+    Back-compat:
+      - callers who don't care can keep calling new_epack(seq, prev_hash, payload)
     """
     ts = time.time()
-
-    if payload_hash_override:
-        payload_hash = str(payload_hash_override)
-    else:
-        payload_hash = str(payload.get("decision_hash") or stable_hash(payload))
+    payload_hash = payload_hash_override or stable_hash(payload)
 
     h = stable_hash(
         {
@@ -54,7 +44,6 @@ def new_epack(
             "ts": ts,
             "prev_hash": prev_hash,
             "payload_hash": payload_hash,
-            "payload": payload,
         }
     )
     return EPACK(seq=seq, ts=ts, prev_hash=prev_hash, payload_hash=payload_hash, payload=payload, hash=h)
