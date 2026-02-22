@@ -1,7 +1,8 @@
 # src/ecosphere/consensus/adapters/factory.py
 from __future__ import annotations
 
-from typing import Dict, Type
+from functools import lru_cache
+from typing import Dict, Type, Tuple
 
 from ecosphere.consensus.config import ModelSpec
 from .base import ModelAdapter
@@ -24,12 +25,23 @@ _ADAPTER_REGISTRY: Dict[str, Type[ModelAdapter]] = {
 }
 
 
-def get_registered_providers() -> list:
+def get_registered_providers() -> list[str]:
     """Return list of registered adapter provider names."""
     return list(_ADAPTER_REGISTRY.keys())
 
-def build_adapter(spec: ModelSpec) -> ModelAdapter:
-    cls = _ADAPTER_REGISTRY.get(spec.provider)
+
+@lru_cache(maxsize=64)
+def _build_cached(provider: str, model: str) -> ModelAdapter:
+    cls = _ADAPTER_REGISTRY.get(provider)
     if not cls:
-        raise ValueError(f"No adapter registered for provider={spec.provider}")
-    return cls(provider=spec.provider, model=spec.model)
+        raise ValueError(f"No adapter registered for provider={provider}")
+    return cls(provider=provider, model=model)
+
+
+def build_adapter(spec: ModelSpec) -> ModelAdapter:
+    """Build (and cache) an adapter for the given ModelSpec.
+
+    Caching reduces per-turn latency by avoiding repeated client init /
+    auth / TLS setup where adapters hold SDK clients.
+    """
+    return _build_cached(spec.provider, spec.model)
