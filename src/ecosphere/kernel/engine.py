@@ -9,7 +9,7 @@ from typing import Any, Dict, List, Tuple
 from ecosphere.config import Settings
 from ecosphere.embeddings.factory import make_embedder
 from ecosphere.epack.chain import new_epack
-from ecosphere.decision.object import build_decision_object
+from ecosphere.epack.crypto import sign_payload_hash
 from ecosphere.kernel.gates import (
     PendingGate,
     handle_pending_gate,
@@ -19,7 +19,6 @@ from ecosphere.kernel.gates import (
     trace,
 )
 from ecosphere.kernel.provenance import current_manifest
-from ecosphere.governance.policy_snapshot import current_policy_snapshot
 from ecosphere.kernel.router import route_aru_sequence
 from ecosphere.kernel.session import Profile, SessionState
 from ecosphere.kernel.session_secret import new_session_secret
@@ -38,7 +37,6 @@ from ecosphere.storage.store import append_jsonl
 from ecosphere.utils.stable import stable_hash
 from ecosphere.validation.validators import ValidationAttempt, validate_output
 from ecosphere.tools.citations import verify_citations, VerificationEvent
-
 
 # ---------------------------
 # TDM output post-processing (deterministic)
@@ -542,29 +540,17 @@ def _seal(sess: SessionState, user_text: str, assistant_text: str, extra: Dict[s
         "traces_tail": [asdict(t) for t in sess.traces[-20:]],
         "tsv_snapshot": sess.tsv.snapshot(),
         "build_manifest": current_manifest(),
-        "policy_snapshot": current_policy_snapshot(),
         "extra": extra,
     }
 
-    # ── Brick 3: Decision Object + EPACK commitment ─────────────────────
-    decision_obj, decision_hash = build_decision_object(
-        session_id=getattr(sess, "session_id", "unknown"),
-        payload=payload,
-        assistant_text=assistant_text,
-        build_manifest=current_manifest(),
-        policy_snapshot=current_policy_snapshot(),
-        profile=getattr(sess, "current_profile", None),
-        prev_decision_hash=getattr(sess, "prev_decision_hash", None),
-    )
-    payload["decision_hash"] = decision_hash
-    payload["decision_object"] = decision_obj
-    setattr(sess, "prev_decision_hash", decision_hash)
+    payload_hash = stable_hash(payload)
+    signature = sign_payload_hash(payload_hash)
 
     ep = new_epack(
         sess.epack_seq,
         sess.epack_prev_hash,
         payload,
-        payload_hash_override=decision_hash,
+        payload_hash_override=payload_hash,
     )
     sess.epack_prev_hash = ep.hash
 
@@ -572,7 +558,8 @@ def _seal(sess: SessionState, user_text: str, assistant_text: str, extra: Dict[s
         "seq": ep.seq,
         "ts": ep.ts,
         "prev_hash": ep.prev_hash,
-        "payload_hash": getattr(ep, "payload_hash", decision_hash),
+        "payload_hash": ep.payload_hash,
+        "signature": signature,
         "hash": ep.hash,
         "payload": ep.payload,
     }
@@ -591,6 +578,7 @@ def _seal(sess: SessionState, user_text: str, assistant_text: str, extra: Dict[s
 # ============================
 # V9 Full Runtime Loop
 # ============================
+
 
 @lru_cache(maxsize=1)
 def _v9_runtime() -> ResilienceRuntime:
