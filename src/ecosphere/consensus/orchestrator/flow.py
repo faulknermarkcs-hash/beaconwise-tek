@@ -1,79 +1,450 @@
+# src/ecosphere/consensus/orchestrator/flow.py
 from __future__ import annotations
 
 import asyncio
 import time
-from typing import Dict, Any
+import uuid
+from dataclasses import dataclass
+from typing import Any, Dict, Optional, Union
 
-from ecosphere.providers.factory import make_llm_provider
-from ecosphere.providers.base import GenerationConfig
+from pydantic import ValidationError
+
+from ecosphere.consensus.adapters.factory import build_adapter
+from ecosphere.consensus.config import ConsensusConfig, ARU
+from ecosphere.consensus.ledger.hooks import emit_stage_event
+from ecosphere.consensus.schemas import PrimaryOutput, SynthesizerOutput
+from ecosphere.consensus.verification.types import VerificationContext, PUBLIC_CONTEXT
+from ecosphere.consensus.gates.scope_gate import ScopeGateConfig, scope_gate_v1
+from ecosphere.consensus.orchestrator.stage_rewrite import stage_rewrite_once
 
 
-# -------------------------
-# Parallel Model Execution
-# -------------------------
+@dataclass
+class ConsensusResult:
+    status: str
+    run_id: str
+    epack: str
+    aru: str
+    output: Optional[Union[PrimaryOutput, SynthesizerOutput]] = None
+    gate: Optional[Dict[str, Any]] = None
+    error: Optional[str] = None
+    timings: Optional[Dict[str, float]] = None
+    debate_outputs: Optional[Dict[str, Any]] = None
 
-async def _run_model(provider, prompt, cfg):
-    loop = asyncio.get_running_loop()
-    return await loop.run_in_executor(
-        None,
-        lambda: provider.generate(prompt, cfg)
+
+def _render_prompt(template: str, vars: Dict[str, str]) -> str:
+    # Simple str.format rendering (templates are controlled by repo)
+    return template.format(**vars)
+
+
+async def _parse_with_repair(
+    *,
+    rid: str,
+    epack: str,
+    adapter,
+    target_model,
+    raw_text: str,
+    repair_template: str,
+    max_attempts: int,
+    aru: str,
+) -> Any:
+    # Try parse JSON directly
+    data = adapter.try_parse_json(raw_text)
+    if data is not None:
+        try:
+            return target_model.model_validate(data)
+        except ValidationError:
+            pass
+
+    # Repair loop
+    last_text = raw_text
+    for attempt in range(1, max_attempts + 1):
+        repaired = await stage_rewrite_once(
+            adapter=adapter,
+            prompt=_render_prompt(
+                repair_template,
+                {
+                    "RUN_ID": rid,
+                    "EPACK": epack,
+                    "ARU": aru,
+                    "BAD_OUTPUT": last_text,
+                },
+            ),
+            temperature=0.0,
+            timeout_s=30,
+        )
+        last_text = repaired.text
+        data = adapter.try_parse_json(last_text)
+        if data is not None:
+            try:
+                return target_model.model_validate(data)
+            except ValidationError:
+                continue
+
+    raise ValidationError.from_exception_data("parse_failed", [])
+
+
+async def _generate_primary(
+    *,
+    rid: str,
+    epack: str,
+    aru: str,
+    adapter,
+    prompt: str,
+    temperature: float,
+    timeout_s: int,
+    repair_template: str,
+    max_repair_attempts: int,
+) -> tuple[PrimaryOutput, str, Dict[str, Any]]:
+    raw_text, meta = await adapter.generate_text(
+        prompt=prompt,
+        temperature=temperature,
+        timeout_s=timeout_s,
     )
+    parsed = await _parse_with_repair(
+        rid=rid,
+        epack=epack,
+        adapter=adapter,
+        target_model=PrimaryOutput,
+        raw_text=raw_text,
+        repair_template=repair_template,
+        max_attempts=max_repair_attempts,
+        aru=aru,
+    )
+    return parsed, raw_text, meta
 
 
-async def run_two_stage_consensus(
+async def _generate_synth(
+    *,
+    rid: str,
+    epack: str,
+    aru: str,
+    adapter,
+    prompt: str,
+    timeout_s: int,
+    repair_template: str,
+    max_repair_attempts: int,
+) -> tuple[SynthesizerOutput, str, Dict[str, Any]]:
+    raw_text, meta = await adapter.generate_text(
+        prompt=prompt,
+        temperature=0.0,
+        timeout_s=timeout_s,
+    )
+    parsed = await _parse_with_repair(
+        rid=rid,
+        epack=epack,
+        adapter=adapter,
+        target_model=SynthesizerOutput,
+        raw_text=raw_text,
+        repair_template=repair_template,
+        max_attempts=max_repair_attempts,
+        aru=aru,
+    )
+    return parsed, raw_text, meta
+
+
+def run_consensus(
+    *,
     user_query: str,
-    primary_model: str,
-    challenger_model: str,
-    arbiter_model: str,
-) -> Dict[str, Any]:
+    aru: str = ARU.ANSWER.value,
+    high_stakes: bool = False,
+    epack: str,
+    config: ConsensusConfig,
+    verification: Optional[VerificationContext] = None,
+    run_id: Optional[str] = None,
+) -> ConsensusResult:
+    """Run TEK consensus.
+
+    Brick 6.1+ behavior:
+      - If config.enable_debate and config.debate are set:
+          Primary (defender) + Challenger (critic) run in parallel, then Arbiter (synthesizer)
+      - Else:
+          Single-stage primary run
+
+    Returns a ConsensusResult with PrimaryOutput or SynthesizerOutput.
     """
-    True two-stage deliberation:
+    rid = run_id or uuid.uuid4().hex
+    verification = verification or PUBLIC_CONTEXT
 
-    1. Primary + Challenger run independently (parallel)
-    2. Arbiter synthesizes final decision
-    """
+    t0 = time.time()
+    timings: Dict[str, float] = {}
 
-    start = time.time()
-
-    primary_provider = make_llm_provider(primary_model)
-    challenger_provider = make_llm_provider(challenger_model)
-    arbiter_provider = make_llm_provider(arbiter_model)
-
-    cfg = GenerationConfig(temperature=0.0, max_tokens=900)
-
-    primary_prompt = f"Primary analysis:\n{user_query}"
-    challenger_prompt = f"Critique and alternative view:\n{user_query}"
-
-    # -------- Parallel Stage --------
-    primary_task = asyncio.create_task(_run_model(primary_provider, primary_prompt, cfg))
-    challenger_task = asyncio.create_task(_run_model(challenger_provider, challenger_prompt, cfg))
-
-    primary_result, challenger_result = await asyncio.gather(
-        primary_task,
-        challenger_task
+    emit_stage_event(
+        epack=epack,
+        run_id=rid,
+        stage="tecl.start",
+        payload={
+            "aru": aru,
+            "high_stakes": high_stakes,
+            "verification": {"verified": verification.verified, "role": verification.role, "role_level": verification.role_level},
+            "primary_model": f"{config.primary.provider}:{config.primary.model}",
+            "enable_debate": bool(config.enable_debate and config.debate),
+        },
     )
 
-    # -------- Arbiter Stage --------
-    arbiter_prompt = f"""
-User query:
-{user_query}
+    # ----------------------------
+    # Debate (Primary/Challenger/Arbiter)
+    # ----------------------------
+    if config.enable_debate and config.debate is not None:
+        debate = config.debate
 
-Primary answer:
-{primary_result.text}
+        defender_adapter = build_adapter(debate.defender_model)
+        critic_adapter = build_adapter(debate.critic_model)
+        synth_adapter = build_adapter(debate.synthesizer_model)
 
-Challenger critique:
-{challenger_result.text}
+        # Independent prompts (no cross-contamination)
+        defender_prompt = _render_prompt(
+            config.prompts.primary_template,
+            {
+                "RUN_ID": rid,
+                "EPACK": epack,
+                "ARU": aru,
+                "USER_QUERY": user_query,
+                "VERIFIED": str(verification.verified).lower(),
+                "ROLE": verification.role,
+                "ROLE_LEVEL": str(verification.role_level),
+                "SCOPE": verification.scope or "none",
+            },
+        )
 
-Synthesize final answer with reasoning.
-"""
+        critic_prompt = _render_prompt(
+            config.prompts.primary_template,
+            {
+                "RUN_ID": rid,
+                "EPACK": epack,
+                "ARU": aru,
+                "USER_QUERY": (
+                    "You are the Challenger. Produce an independent answer, then list weaknesses/risks "
+                    "in typical answers and propose safer alternatives.\n\nUSER_QUERY:\n" + user_query
+                ),
+                "VERIFIED": str(verification.verified).lower(),
+                "ROLE": verification.role,
+                "ROLE_LEVEL": str(verification.role_level),
+                "SCOPE": verification.scope or "none",
+            },
+        )
 
-    arbiter_result = await _run_model(arbiter_provider, arbiter_prompt, cfg)
+        async def _run_debate() -> ConsensusResult:
+            t1 = time.time()
+            # Parallel primary/challenger
+            defender_task = asyncio.create_task(
+                _generate_primary(
+                    rid=rid,
+                    epack=epack,
+                    aru=aru,
+                    adapter=defender_adapter,
+                    prompt=defender_prompt,
+                    temperature=config.primary_temperature,
+                    timeout_s=config.primary_timeout_s,
+                    repair_template=config.prompts.repair_template,
+                    max_repair_attempts=config.max_repair_attempts,
+                )
+            )
+            critic_task = asyncio.create_task(
+                _generate_primary(
+                    rid=rid,
+                    epack=epack,
+                    aru=aru,
+                    adapter=critic_adapter,
+                    prompt=critic_prompt,
+                    temperature=0.0,
+                    timeout_s=debate.critic_model.timeout_s or config.primary_timeout_s,
+                    repair_template=config.prompts.repair_template,
+                    max_repair_attempts=config.max_repair_attempts,
+                )
+            )
 
-    latency_ms = int((time.time() - start) * 1000)
+            try:
+                defender_parsed, defender_raw, defender_meta, = await defender_task
+                critic_parsed, critic_raw, critic_meta, = await critic_task
+            except Exception as e:
+                return ConsensusResult(
+                    status="FAIL",
+                    run_id=rid,
+                    epack=epack,
+                    aru=aru,
+                    error=f"debate_generation_failed: {type(e).__name__}: {e}",
+                    timings={"total_ms": (time.time() - t0) * 1000.0},
+                )
 
-    return {
-        "primary": primary_result.text,
-        "challenger": challenger_result.text,
-        "final": arbiter_result.text,
-        "latency_ms": latency_ms,
-    }
+            timings["primary_parallel_ms"] = (time.time() - t1) * 1000.0
+
+            # Arbiter synthesis
+            t2 = time.time()
+            synth_prompt = (
+                "You are the Arbiter. You MUST output valid JSON matching SynthesizerOutput.\n"
+                "Choose the best answer given safety, policy, and evidence quality.\n\n"
+                f"RUN_ID: {rid}\nEPACK: {epack}\nARU: {aru}\n\n"
+                f"USER_QUERY:\n{user_query}\n\n"
+                f"PRIMARY (Defender) JSON:\n{defender_raw}\n\n"
+                f"CHALLENGER (Critic) JSON:\n{critic_raw}\n\n"
+                "Synthesize a final answer. Keep reasoning_trace concise and policy-aware."
+            )
+
+            try:
+                synth_parsed, synth_raw, synth_meta = await _generate_synth(
+                    rid=rid,
+                    epack=epack,
+                    aru=aru,
+                    adapter=synth_adapter,
+                    prompt=synth_prompt,
+                    timeout_s=debate.synthesizer_model.timeout_s or config.primary_timeout_s,
+                    repair_template=config.prompts.repair_template,
+                    max_repair_attempts=config.max_repair_attempts,
+                )
+            except Exception as e:
+                return ConsensusResult(
+                    status="FAIL",
+                    run_id=rid,
+                    epack=epack,
+                    aru=aru,
+                    error=f"synth_parse_failed: {type(e).__name__}: {e}",
+                    timings={"total_ms": (time.time() - t0) * 1000.0},
+                    debate_outputs={
+                        "defender_raw": defender_raw,
+                        "critic_raw": critic_raw,
+                    },
+                )
+
+            timings["arbiter_ms"] = (time.time() - t2) * 1000.0
+
+            # Scope gate on final answer
+            gate_cfg = ScopeGateConfig(high_stakes=high_stakes)
+            gate = scope_gate_v1(
+                answer_text=synth_parsed.answer,
+                config=gate_cfg,
+            )
+            if not gate.get("ok", True):
+                return ConsensusResult(
+                    status="GATED",
+                    run_id=rid,
+                    epack=epack,
+                    aru=aru,
+                    output=synth_parsed,
+                    gate=gate,
+                    timings={"total_ms": (time.time() - t0) * 1000.0, **timings},
+                    debate_outputs={
+                        "defender": defender_parsed.model_dump(),
+                        "critic": critic_parsed.model_dump(),
+                        "arbiter_raw": synth_raw,
+                        "defender_meta": defender_meta,
+                        "critic_meta": critic_meta,
+                        "arbiter_meta": synth_meta,
+                    },
+                )
+
+            return ConsensusResult(
+                status="PASS",
+                run_id=rid,
+                epack=epack,
+                aru=aru,
+                output=synth_parsed,
+                timings={"total_ms": (time.time() - t0) * 1000.0, **timings},
+                debate_outputs={
+                    "defender": defender_parsed.model_dump(),
+                    "critic": critic_parsed.model_dump(),
+                    "arbiter_raw": synth_raw,
+                    "defender_meta": defender_meta,
+                    "critic_meta": critic_meta,
+                    "arbiter_meta": synth_meta,
+                },
+            )
+
+        result = asyncio.run(_run_debate())
+
+        emit_stage_event(
+            epack=epack,
+            run_id=rid,
+            stage="tecl.end",
+            payload={
+                "status": result.status,
+                "timings": result.timings or {},
+                "debate": True,
+            },
+        )
+        return result
+
+    # ----------------------------
+    # Single-stage primary (legacy)
+    # ----------------------------
+    adapter = build_adapter(config.primary)
+
+    prompt = _render_prompt(
+        config.prompts.primary_template,
+        {
+            "RUN_ID": rid,
+            "EPACK": epack,
+            "ARU": aru,
+            "USER_QUERY": user_query,
+            "VERIFIED": str(verification.verified).lower(),
+            "ROLE": verification.role,
+            "ROLE_LEVEL": str(verification.role_level),
+            "SCOPE": verification.scope or "none",
+        },
+    )
+
+    async def _run_primary() -> ConsensusResult:
+        t1 = time.time()
+        raw_text, meta = await adapter.generate_text(
+            prompt=prompt,
+            temperature=config.primary_temperature,
+            timeout_s=config.primary_timeout_s,
+        )
+        timings["primary_ms"] = (time.time() - t1) * 1000.0
+
+        try:
+            parsed = await _parse_with_repair(
+                rid=rid,
+                epack=epack,
+                adapter=adapter,
+                target_model=PrimaryOutput,
+                raw_text=raw_text,
+                repair_template=config.prompts.repair_template,
+                max_attempts=config.max_repair_attempts,
+                aru=aru,
+            )
+        except Exception as e:
+            return ConsensusResult(
+                status="FAIL",
+                run_id=rid,
+                epack=epack,
+                aru=aru,
+                error=f"primary_parse_failed: {type(e).__name__}: {e}",
+                timings={"total_ms": (time.time() - t0) * 1000.0, **timings},
+            )
+
+        # Scope gate
+        gate_cfg = ScopeGateConfig(high_stakes=high_stakes)
+        gate = scope_gate_v1(answer_text=parsed.answer, config=gate_cfg)
+        if not gate.get("ok", True):
+            return ConsensusResult(
+                status="GATED",
+                run_id=rid,
+                epack=epack,
+                aru=aru,
+                output=parsed,
+                gate=gate,
+                timings={"total_ms": (time.time() - t0) * 1000.0, **timings},
+            )
+
+        return ConsensusResult(
+            status="PASS",
+            run_id=rid,
+            epack=epack,
+            aru=aru,
+            output=parsed,
+            timings={"total_ms": (time.time() - t0) * 1000.0, **timings},
+        )
+
+    result = asyncio.run(_run_primary())
+
+    emit_stage_event(
+        epack=epack,
+        run_id=rid,
+        stage="tecl.end",
+        payload={
+            "status": result.status,
+            "timings": result.timings or {},
+            "debate": False,
+        },
+    )
+    return result
