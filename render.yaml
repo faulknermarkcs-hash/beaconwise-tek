@@ -1,6 +1,44 @@
-services:
-  - type: web
-    name: transparency-ecosphere-kernel
-    env: python
-    buildCommand: pip install -r requirements.txt && pip install .
-    startCommand: bash -lc "export PYTHONPATH=$PWD/src:$PYTHONPATH && streamlit run app.py --server.port $PORT --server.address 0.0.0.0"
+policy_id: TEK-v1.1
+policy_version: 1.1
+
+consensus:
+  enable_debate: true
+
+  debate:
+    # PRIMARY (defender)
+    defender_model:
+      provider: openai
+      model: gpt-4o
+      timeout_s: 45
+
+    # CHALLENGER (critic)
+    critic_model:
+      provider: anthropic
+      model: claude-sonnet-4-20250514
+      timeout_s: 45
+
+    # ARBITER (synthesizer)
+    synthesizer_model:
+      provider: groq
+      model: llama-3.3-70b-versatile
+      timeout_s: 60
+
+  arbitration:
+    two_stage: true
+    parallel_primary_challenger: true
+    require_arbiter: true
+
+resilience:
+  enabled: true
+  tsi_monitoring: true
+  auto_recovery: true
+
+replay:
+  deterministic: true
+  require_signature: true
+  verify_on_load: true
+
+telemetry:
+  enabled: true
+  capture_latency: true
+  capture_validation: true
