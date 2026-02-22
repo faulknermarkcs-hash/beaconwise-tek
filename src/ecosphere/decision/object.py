@@ -29,6 +29,7 @@ def build_decision_object(
     payload: Dict[str, Any],
     assistant_text: str,
     build_manifest: Dict[str, Any],
+    policy_snapshot: Optional[Dict[str, Any]] = None,
     profile: Optional[str] = None,
     prev_decision_hash: Optional[str] = None,
 ) -> Tuple[Dict[str, Any], str]:
