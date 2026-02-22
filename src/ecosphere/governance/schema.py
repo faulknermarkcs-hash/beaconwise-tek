@@ -1,58 +1,116 @@
-# src/ecosphere/governance/schema.py
-"""BeaconWise Interoperable Governance Schema Standard (V7 Capability 4).
-
-Defines the open, versioned governance data standard:
-  - EPACK interoperability schema
-  - audit chain data format
-  - governance telemetry standard
-  - routing proof metadata specification
-  - backward compatibility rules
-
-Principle: Standards spread through interoperability.
-"""
 from __future__ import annotations
 
 import json
-from typing import Any, Dict, List, Optional
+from dataclasses import dataclass
+from typing import Any, Dict, Optional
 
-from ecosphere.utils.stable import stable_hash
+# -----------------------------------------------------------------------------
+# Governance schema registry
+#
+# This module is used by TEK's API to expose governance/policy schemas for:
+# - UI validation
+# - auditor-facing schema versioning
+# - policy runtime compatibility checks
+#
+# Brick 7+ requires these public functions:
+#   - get_all_schemas()
+#   - get_schema(name)
+#   - get_schema_version(name)
+# -----------------------------------------------------------------------------
+
+# NOTE:
+# We keep an in-memory registry so this works in Render without needing
+# filesystem access or packaging data configuration. You can expand these
+# schemas later or load from YAML resources, but this is a stable baseline.
 
 
-# ── Schema Version ────────────────────────────────────────────────
+@dataclass(frozen=True)
+class SchemaInfo:
+    name: str
+    version: str
+    schema: Dict[str, Any]
 
-SCHEMA_VERSION = "1.0.0"
-SCHEMA_FAMILY = "beaconwise-governance"
 
+# -----------------------------------------------------------------------------
+# Built-in baseline schemas
+# -----------------------------------------------------------------------------
 
-# ── EPACK Interoperability Schema ─────────────────────────────────
+_POLICY_SCHEMA_V1: Dict[str, Any] = {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "title": "TEK Governance Policy Schema",
+    "type": "object",
+    "required": ["policy_id", "policy_version"],
+    "properties": {
+        "policy_id": {"type": "string"},
+        "policy_version": {"type": ["string", "number"]},
 
-EPACK_SCHEMA = {
-    "schema": f"{SCHEMA_FAMILY}/epack",
-    "version": SCHEMA_VERSION,
-    "fields": {
-        "seq": {"type": "integer", "required": True, "description": "Monotonic sequence number"},
-        "ts": {"type": "float", "required": True, "description": "Unix timestamp"},
-        "prev_hash": {"type": "string", "required": True, "description": "Hash of previous record (GENESIS for first)"},
-        "payload_hash": {
-            "type": "string",
-            "required": True,
-            "description": "Brick 3: commitment hash (Decision canonical sha256) when available; otherwise payload-derived hash"
-        },
-        "hash": {"type": "string", "required": True, "description": "EPACK chain hash (stable_hash over header + payload + payload_hash)"},
-        "payload": {"type": "object", "required": True, "description": "Replayable payload (may include decision_hash + decision_object)"},
+        "consensus": {"type": "object"},
+        "resilience": {"type": "object"},
+        "replay": {"type": "object"},
+        "telemetry": {"type": "object"},
+        "oversight": {"type": "object"},
+        "deployment": {"type": "object"},
+        "liability": {"type": "object"},
+        "evidence": {"type": "object"},
+        "risk_tests": {"type": "object"},
     },
+    "additionalProperties": True,
 }
 
+_SCHEMA_REGISTRY: Dict[str, SchemaInfo] = {
+    "policy": SchemaInfo(name="policy", version="1.0", schema=_POLICY_SCHEMA_V1),
+}
 
-def validate_epack_record(rec: Dict[str, Any]) -> List[str]:
-    """Lightweight schema validator. Returns list of errors."""
-    errors: List[str] = []
-    for k, spec in EPACK_SCHEMA["fields"].items():
-        if spec.get("required") and k not in rec:
-            errors.append(f"missing required field: {k}")
-    return errors
+# -----------------------------------------------------------------------------
+# Backwards-compatible public API expected by api/main.py
+# -----------------------------------------------------------------------------
+
+def get_all_schemas() -> Dict[str, Dict[str, Any]]:
+    """
+    Returns:
+        dict: { schema_name: { "name":..., "version":..., "schema": {...} } }
+    """
+    out: Dict[str, Dict[str, Any]] = {}
+    for k, info in _SCHEMA_REGISTRY.items():
+        out[k] = {"name": info.name, "version": info.version, "schema": info.schema}
+    return out
 
 
-def epack_record_hash(rec: Dict[str, Any]) -> str:
-    """Compute EPACK chain hash for an EPACK dict record."""
-    return stable_hash(rec)
+def get_schema(name: str) -> Dict[str, Any]:
+    """
+    Returns the JSON schema object for `name`.
+    Raises KeyError if not found.
+    """
+    info = _SCHEMA_REGISTRY.get(name)
+    if not info:
+        raise KeyError(f"Unknown schema: {name}")
+    return info.schema
+
+
+def get_schema_version(name: str) -> str:
+    """
+    Returns the schema version string for `name`.
+    Raises KeyError if not found.
+    """
+    info = _SCHEMA_REGISTRY.get(name)
+    if not info:
+        raise KeyError(f"Unknown schema: {name}")
+    return info.version
+
+
+# -----------------------------------------------------------------------------
+# Convenience helpers (safe)
+# -----------------------------------------------------------------------------
+
+def register_schema(name: str, version: str, schema: Dict[str, Any]) -> None:
+    """
+    Optional helper to add schemas at runtime (dev/debug).
+    """
+    _SCHEMA_REGISTRY[name] = SchemaInfo(name=name, version=version, schema=schema)
+
+
+def dumps_schema(name: str) -> str:
+    """
+    Pretty JSON dump for debugging.
+    """
+    return json.dumps(get_schema(name), indent=2, ensure_ascii=False)
